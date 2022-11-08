@@ -1,0 +1,161 @@
+---
+#Подготовка dev-server к сборке приложения
+- name: Provisioning dev-server
+  hosts: tag_Name_dev_server
+  remote_user: ubuntu
+  become: yes
+  become_user: root
+  gather_facts: False
+
+  tasks:
+  - name: repo and cahe update
+    apt:
+      update_cache: yes
+      force_apt_get: yes
+      cache_valid_time: 3600
+  
+  - name: ensure docker,python and building packages are present
+    apt:
+      name: "{{item}}"
+      state: present
+    with_items:
+      - python3
+      - python3-pip
+      - docker.io
+      - default-jdk
+      - git
+      - maven
+  - name: ensure boto and docker modules are present
+    pip:
+      name: "{{item}}"
+    with_items:
+      - boto3
+      - docker   
+#Сборка приложения
+  - name: create build directory
+    file:
+      path: /tmp/app
+      state: directory
+      owner: root
+      group: root
+      mode: '0777'
+  - name: create image directory
+    file:
+      path: /tmp/image
+      state: directory
+      owner: root
+      group: root
+      mode: '0777'
+
+  - name: clone code from git
+    git:
+      repo: https://github.com/AlexOgorodnikov/Java-app.git
+      dest: /tmp/app/
+  - name: make war file
+    shell:
+      chdir: /tmp/app/
+      cmd: mvn package
+
+  - name: Start docker daemon
+    systemd:
+      name: docker
+      state: started
+#Сборка образа для развертываения
+  - name: clone Dockerfile from git
+    git:
+      repo: https://github.com/AlexOgorodnikov/AppDockerfile.git
+      dest: /tmp/image/
+  - name: copy Dockerfile
+    copy:
+      remote_src: yes
+      src: /tmp/image/Dockerfile
+      dest: /tmp/app
+      owner: root
+      group: root
+      mode: '0777'
+
+  - name: build app image
+    docker_image:
+      name: app:1.0
+      build:
+        path: /tmp/app/
+      source: build
+
+  - name: prepare image as tarball for copy
+    docker_image:
+      name: app:1.0
+      archive_path: /tmp/app/app:1.0.tar
+      source: pull
+      state: present
+      timeout: 600
+
+  - name: copy image to ansible host
+    synchronize:
+      src: /tmp/app/app:1.0.tar
+      dest: /tmp/app:1.0.tar
+      mode: pull
+#Подготовка сервера app-server  к развертыванию приложения
+- name: Provisioning app-server
+  hosts: tag_Name_app_server
+  remote_user: ubuntu
+  become: yes
+  become_user: root
+  gather_facts: False
+
+  tasks:
+  - name: repo and cahe update
+    apt:
+      update_cache: yes
+      force_apt_get: yes
+      cache_valid_time: 3600
+
+  - name: ensure docker,python and building packages are present
+    apt:
+      name: "{{item}}"
+      state: present
+    with_items:
+      - python3
+      - python3-pip
+      - docker.io
+      - default-jdk
+      - git
+      - maven
+  - name: esure boto and docker modules are present
+    pip:
+      name: "{{item}}"
+    with_items:
+      - boto3
+      - docker   
+  
+  - name: create build directory
+    file:
+      path: /tmp/app
+      state: directory
+      owner: root
+      group: root
+      mode: '0777'
+
+  - name: Copy image file 
+    synchronize:
+      src: /tmp/app:1.0.tar
+      dest: /tmp/app/app:1.0.tar
+
+# Deploy app       
+  - name: Start docker daemon
+    systemd:
+      name: docker
+      state: started
+
+  - name: load image from tarball
+    docker_image:
+      name: app:1.0
+      load_path: /tmp/app/app:1.0.tar
+      state: present
+      source: load
+  
+  - name: deploy app
+    docker_container:
+        name: app
+        image: app:1.0
+        ports: 
+          - "8080:8080"
